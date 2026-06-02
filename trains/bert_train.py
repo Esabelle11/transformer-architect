@@ -2,12 +2,12 @@
 import re
 import torch
 import numpy as np
-from torch.nn import functional as F
+import torch.nn as nn
 from trains.checkpoint import save_checkpoint
 
 
 def train_one_epoch(model,train_loader,optimizer,device,config,global_step):
-    criterion = F.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()
     model.train()
     total_loss = 0
 
@@ -16,6 +16,7 @@ def train_one_epoch(model,train_loader,optimizer,device,config,global_step):
         scaler = torch.amp.GradScaler("cuda")
 
     for batch in train_loader:
+
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["label"].to(device)
@@ -67,7 +68,7 @@ def evaluate(model, val_loader, device, config):
 
 def train(model,train_loader,val_loader,optimizer, device,config):
     global_step = 0
-    best_val_acc = float("inf")
+    best_val_acc = -float("inf")
     for epoch in range(config.epochs):
 
         train_loss, global_step= train_one_epoch(
@@ -88,11 +89,12 @@ def train(model,train_loader,val_loader,optimizer, device,config):
             save_checkpoint(
                 "checkpoints/bert/best.pt",
                 model,
-                epoch,
+                optimizer,
+                epoch+1,
                 global_step
             )
 
-        print(f"Epoch {epoch} | Train loss {train_loss:.4f} | Val Acc {val_acc:.4f}")
+        print(f"Epoch {epoch+1} | Train loss {train_loss:.4f} | Val Acc {val_acc:.4f}")
 
 
 

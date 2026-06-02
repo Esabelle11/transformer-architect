@@ -5,7 +5,7 @@ from model.bert_transformer import EncoderTransformer
 from device import init_weights
 
 def run_bert_training(device,config):
-    train_loader, val_loader, vocab_size , _= dataset_retrieve(config)
+    train_loader, val_loader, vocab_size , tokenizer= dataset_retrieve(config)
 
     model = EncoderTransformer(vocab_size,config)
     model.apply(init_weights)

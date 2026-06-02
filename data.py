@@ -158,11 +158,17 @@ def dataset_retrieve(config):
 
     elif config.project_name == "BERT":
         tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_model_name)
-        tokenizer.pad_token = tokenizer.eos_token
+        # tokenizer.pad_token = tokenizer.eos_token
+        if tokenizer.pad_token is None:
+            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         vocab_size = tokenizer.vocab_size
 
-        dataset_train = load_dataset("imdb", split="train[:1000]")
-        dataset_val = load_dataset("imdb", split="train[1000:1200]")
+        print("pad_token:", tokenizer.pad_token)
+        print("eos_token:", tokenizer.eos_token)
+        print("pad_token_id:", tokenizer.pad_token_id)
+
+        dataset_train = load_dataset("mteb/imdb", split="train[:200]")
+        dataset_val = load_dataset("mteb/imdb", split="train[1000:1050]")
         
         train_ds = IMDBDataset(dataset_train, tokenizer, config)
         val_ds = IMDBDataset(dataset_val, tokenizer, config)

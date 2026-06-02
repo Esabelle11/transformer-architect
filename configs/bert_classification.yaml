@@ -1,5 +1,5 @@
 
-project_name: "GRPO"
+project_name: "BERT"
 
 tokenizer_model_name: "bert-base-uncased"
 
@@ -12,7 +12,7 @@ max_length: 512
 #training config
 batch_size: 16
 lr: 0.0001
-epochs: 2
+epochs: 3
 
 # model
 d_model: 256

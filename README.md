@@ -7,7 +7,7 @@ While studying the original "Attention Is All You Need" Encoder-Decoder architec
 
 Instead of maintaining fragmented, messy experimental scripts, this repository acts as a single-point orchestrator. By modifying a declarative YAML configuration, the system dynamically routes execution to one of three core machine learning paradigms:
 
-1. **Classic Supervised Fine-Tuning (SFT):**Semantic embedding extraction and text classification using an Encoder-only architecture (**BERT**).
+1. **Classic Supervised Fine-Tuning (SFT):** Semantic embedding extraction and text classification using an Encoder-only architecture (**BERT**).
 2. **Offline Preference Alignment:** Reference-guided policy optimization utilizing modern Decoders(**DPO** via Llama/Qwen).
 3. **Reinforcement Learning via Group Rewards:** Advanced reasoning-loop optimization without an explicit critic network(**GRPO** via Qwen/DeepSeek-style workflows).
 
