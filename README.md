@@ -24,7 +24,7 @@ This project is designed for deep understanding of LLM internals, not just high-
 ## 📚 Table of Contents
 
 - [Project Vision](##-📖-Project-Vision)
-- [Architechture](##-🏗️-Architecture)
+- [Architecture](##-🏗️-Architecture)
 - [Implemented Models](##-🧠-Implemented-Models)
 - [Quick Start](##-⚡-Quick-Start)
 - [1. Encoder Transformer (BERT-style Classification Model)](##-🧠-1.-Encoder-Transformer-(BERT-style-Classification-Model))
