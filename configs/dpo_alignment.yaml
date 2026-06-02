@@ -1,0 +1,21 @@
+project_name: "DPO"
+
+tokenizer_model_name: "gpt2"
+
+#dataset size
+train_size: 1000
+test_size: 250
+max_length: 512
+
+#training config
+batch_size: 16
+accumulation_steps: 4
+epochs: 3
+lr: 0.0001
+beta: 0.1
+
+# model
+d_model: 256
+n_heads: 4
+n_layers: 4
+dropout: 0.1

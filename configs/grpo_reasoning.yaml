@@ -1,0 +1,32 @@
+project_name: "GRPO"
+
+tokenizer_model_name: "gpt2"
+
+#dataset size
+train_size: 1000
+test_size: 250
+max_length: 512
+
+#training config
+# GRPO-safe batch size
+batch_size: 16
+accumulation_steps: 2
+epochs: 3
+lr: 0.0001
+# GRPO KL penalty (if you implement KL later)
+kl_beta: 0.02
+# GRPO sampling
+K: 4
+temperature: 0.8
+top_k: 50
+
+# model
+d_model: 256
+n_heads: 4
+n_layers: 4
+dropout: 0.1
+
+# stability
+grad_clip : 1.0
+
+
