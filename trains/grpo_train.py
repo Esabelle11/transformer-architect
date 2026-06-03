@@ -4,379 +4,293 @@ import torch
 import numpy as np
 from torch.nn import functional as F
 from trains.checkpoint import save_checkpoint
+import copy
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
 
 
 @torch.no_grad()
-def sample(model, x, tokenizer, max_new_tokens=128, temperature=0.8):
+def sample(model, x, tokenizer, max_new_tokens=64, temperature=0.8):
+
     model.eval()
-    max_len = model.pos_emb.num_embeddings
+
+    B, T = x.shape
+    max_len = T + max_new_tokens
+
+    out = torch.full(
+        (B, max_len),
+        tokenizer.pad_token_id,
+        device=x.device,
+        dtype=x.dtype
+    )
+
+    out[:, :T] = x
+
+    cur_len = T
 
     for _ in range(max_new_tokens):
-        if x.size(1) >= max_len:
-            break
-
-        logits = model(x)
+        logits = model(out[:, :cur_len])
 
         logits = logits[:, -1, :] / temperature
 
-        probs = F.softmax(logits, dim=-1)
+        probs = torch.softmax(logits, dim=-1)
 
         next_token = torch.multinomial(probs, 1)
 
-        x = torch.cat([x, next_token], dim=1)
+        out[:, cur_len] = next_token.squeeze(-1)
 
-    # for _ in range(max_new_tokens):
+        cur_len += 1
 
-    #     ctx = x[:, -model.pos_emb.num_embeddings:]
-
-    #     logits = model(ctx)
-
-    #     logits = logits[:, -1, :] / temperature
-
-    #     probs = F.softmax(logits, dim=-1)
-
-    #     next_token = torch.multinomial(probs, 1)
-
-    #     x = torch.cat([x, next_token], dim=1)
-
-        # if next_token.item() == tokenizer.eos_token_id:
-        #     break
         if (next_token == tokenizer.eos_token_id).all():
             break
 
-    return x
-  
+    return out[:, :cur_len]
 
 def extract_number(text):
-    # print(text)
+    import re
     nums = re.findall(r"-?\d+\.?\d*", text)
     return nums[-1] if nums else None
 
+
 def reward_fn(pred, gt):
-
-    pred_num = extract_number(pred)
-    gt_num = extract_number(gt)
-
-    if pred_num is None or gt_num is None:
-        return -0.5
-
     try:
-        pred_num = float(pred_num)
-        gt_num = float(gt_num)
-    except Exception:
-        return -0.5
+        # print("pred: ",pred)
+        # print("gt: ",gt)
+        p = extract_number(pred)
+        g = extract_number(gt)
 
-    if abs(pred_num - gt_num) < 1e-6:
-        return 1.0
+        # print("p: ",p)
+        # print("g: ",g)
 
-    error = abs(pred_num - gt_num)
+        if p is None or g is None:
+            return -1.0
 
-    return -0.01 * error
+        p = float(p)
+        g = float(g)
 
-def compute_logprob(model, x,tokenizer):
+        error = abs(p - g)
+        if error < 1e-6:
+            return 1.0
+        else:
+            error = min(error, 100)
+            return -error * 0.1
+            # return -math.log1p(error)
+
+        # return 1.0 if abs(p - g) < 1e-6 else -abs(p - g) * 0.01
+
+    except:
+        return -1.0
+
+def compute_logprob(model, x, tokenizer):
     logits = model(x[:, :-1])
-
-    log_probs = F.log_softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
 
     target = x[:, 1:].unsqueeze(-1)
 
     token_logprob = log_probs.gather(-1, target).squeeze(-1)
 
-    # ❗ mask padding
     mask = (x[:, 1:] != tokenizer.pad_token_id).float()
 
-    token_logprob = token_logprob * mask
-
-    return token_logprob.sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-
+    return (token_logprob * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
 
 def kl_penalty(logits, ref_logits):
-    p = F.log_softmax(logits, dim=-1)
-    q = F.softmax(ref_logits, dim=-1)
+    p = torch.log_softmax(logits, dim=-1)
+    q = torch.softmax(ref_logits, dim=-1)
 
-    kl = (q * (torch.log(q + 1e-8) - p)).sum(-1)
-
-    return kl.mean()
-
+    return (q * (torch.log(q + 1e-8) - p)).sum(-1).mean()
 
 def entropy_bonus(logits):
-    logits = logits[:, -1, :]
-    p = F.softmax(logits, dim=-1)
-    return -(p * torch.log(p + 1e-8)).sum(-1).mean()
+    probs = torch.softmax(logits[:, -1, :], dim=-1)
+    return -(probs * torch.log(probs + 1e-8)).sum(-1).mean()
+
+def entropy_bonus_from_logits(logits):
+    # logits: [B, T, V]
+    probs = torch.softmax(logits[:, -1, :], dim=-1)
+    log_probs = torch.log(probs + 1e-8)
+    entropy = -(probs * log_probs).sum(dim=-1)
+    return entropy.mean()
 
 @torch.no_grad()
-def evaluate_grpo(
-    model,
-    val_loader,
-    tokenizer,
-    device,
-    config
-):
+def evaluate_grpo(model, loader, tokenizer, device, config):
 
     model.eval()
+    total_reward = 0
+    total = 0
 
-    total_reward = 0.0
-    total_examples = 0
-
-    for batch in val_loader:
+    for batch in loader:
 
         p = batch["question"].to(device)
         a = batch["answer"].to(device)
 
-        B = p.size(0)
-
-        batch_rewards = []
-
-        x = sample(
-            model,
-            p.clone(),
-            tokenizer
-        )
+        x = sample(model, p, tokenizer)
 
         prompt_len = p.size(1)
 
-        for i in range(B):
+        for i in range(p.size(0)):
 
-            pred_text = tokenizer.decode(
+            pred = tokenizer.decode(
                 x[i, prompt_len:],
                 skip_special_tokens=True
             )
 
-            gt_text = tokenizer.decode(
+            gt = tokenizer.decode(
                 a[i],
                 skip_special_tokens=True
             )
 
-            r = reward_fn(
-                pred_text,
-                gt_text
-            )
+            total_reward += reward_fn(pred, gt)
+            total += 1
 
-            batch_rewards.append(r)
-
-        total_reward += sum(batch_rewards)
-        total_examples += B
-
-    model.train()
-
-    return total_reward / total_examples
+    return total_reward / total
 
 def train_one_epoch(
     model,
+    ref_model,
     tokenizer,
     loader,
     optimizer,
     device,
     config,
-    global_step,
+    global_step
 ):
 
+    model.train()
+    ref_model.eval()
     running_reward = 0.0
     running_loss = 0.0
 
-    use_amp = torch.cuda.is_available()
-
-    scaler = None
-    if use_amp:
-        scaler = torch.amp.GradScaler("cuda")
-
-    model.train()
-
     for step, batch in enumerate(loader):
 
-        p = batch["question"].to(device)      # [B, T]
-        a = batch["answer"].to(device)        # [B, T]
+        p = batch["question"].to(device)
+        a = batch["answer"].to(device)
 
-        B = p.size(0)
-        K = config.K
+        B, K = p.size(0), config.K
+
+        prompts = p.repeat_interleave(K, dim=0)
+        answers = a.repeat_interleave(K, dim=0)
 
         optimizer.zero_grad(set_to_none=True)
+        # print("prompts: ",prompts.shape)
 
         # ==================================================
-        # Create K rollouts per prompt
+        # 1. Rollout generation
         # ==================================================
+        x = sample(model, prompts, tokenizer)
+        # print("x: ",x.shape)
 
-        prompts = p.repeat_interleave(K, dim=0)      # [B*K, T]
-        answers = a.repeat_interleave(K, dim=0)      # [B*K, T]
 
-        if use_amp:
+        # ==================================================
+        # 2. Logprob under current model
+        # ==================================================
+        logp = compute_logprob(model, x, tokenizer)
+        # print("logp: ",logp.shape)
 
-            with torch.autocast(device_type="cuda"):
+        # ==================================================
+        # 3. Logprob under reference model (KL anchor)
+        # ==================================================
+        with torch.no_grad():
+            ref_logits = ref_model(x[:, :-1])
+        cur_logits = model(x[:, :-1])
 
-                # --------------------------------------
-                # Generate rollouts
-                # --------------------------------------
-                x = sample(
-                    model,
-                    prompts.clone(),
-                    tokenizer
-                )                                    # [B*K, T_new]
+        kl = kl_penalty(cur_logits, ref_logits)
+        ent = entropy_bonus_from_logits(cur_logits)
 
-                logits = model(x)
+        # ==================================================
+        # 4. Rewards
+        # ==================================================
+        rewards = []
 
-                logp = compute_logprob(
-                    model,
-                    x,
-                    tokenizer
-                )                                    # [B*K]
+        prompt_len = p.size(1)
 
-                # --------------------------------------
-                # Rewards
-                # --------------------------------------
-                reward_list = []
-
-                for i in range(B * K):
-
-                    pred_text = tokenizer.decode(
-                        x[i],
-                        skip_special_tokens=True
-                    )
-
-                    gt_text = tokenizer.decode(
-                        answers[i],
-                        skip_special_tokens=True
-                    )
-
-                    r = reward_fn(
-                        pred_text,
-                        gt_text
-                    )
-
-                    reward_list.append(r)
-
-                rewards = torch.tensor(
-                    reward_list,
-                    dtype=torch.float32,
-                    device=device
-                )                                    # [B*K]
-
-                # --------------------------------------
-                # Reshape for GRPO
-                # --------------------------------------
-                rewards = rewards.view(B, K)
-                logp = logp.view(B, K)
-
-                baseline = rewards.mean(
-                    dim=1,
-                    keepdim=True
-                )
-
-                advantages = rewards - baseline
-
-                # --------------------------------------
-                # KL / Entropy
-                # --------------------------------------
-                kl = torch.tensor(
-                    0.0,
-                    device=device
-                )
-
-                # ent = entropy_bonus(logits)
-
-                # loss = (
-                #     -(logp * advantages).mean()
-                #     + 0.01 * kl
-                #     - 0.001 * ent
-                # )
-                loss = -(logp * advantages).mean()
-
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-        else:
-
-            x = sample(
-                model,
-                prompts.clone(),
-                tokenizer
+        for i in range(B * K):
+            pred = tokenizer.decode(
+                x[i, prompt_len:],
+                skip_special_tokens=True
             )
 
-            logits = model(x)
-
-            logp = compute_logprob(
-                model,
-                x,
-                tokenizer
-            )
-            print("logp: ", logp)
-
-            reward_list = []
-
-            for i in range(B * K):
-
-                pred_text = tokenizer.decode(
-                    x[i],
-                    skip_special_tokens=True
-                )
-
-                gt_text = tokenizer.decode(
-                    answers[i],
-                    skip_special_tokens=True
-                )
-
-                r = reward_fn(
-                    pred_text,
-                    gt_text
-                )
-
-                reward_list.append(r)
-
-            rewards = torch.tensor(
-                reward_list,
-                dtype=torch.float32,
-                device=device
+            gt = tokenizer.decode(
+                answers[i],
+                skip_special_tokens=True
             )
 
-            rewards = rewards.view(B, K)
-            logp = logp.view(B, K)
-            print("rewards: ", rewards)
-            print("logp: ", logp)
-            baseline = rewards.mean(
-                dim=1,
-                keepdim=True
-            )
-            print("baseline: ", baseline)
-            advantages = rewards - baseline
-            print("advantages: ", advantages)
+            rewards.append(reward_fn(pred, gt))
 
-            kl = torch.tensor(
-                0.0,
-                device=device
-            )
+        rewards = torch.tensor(rewards, device=device).view(B, K)
 
-            # ent = entropy_bonus(logits)
+        # ==================================================
+        # 5. GRPO advantage 
+        # ==================================================
+        baseline = rewards.mean(dim=1, keepdim=True)
+        advantages = (rewards - baseline)
 
-            # loss = (
-            #     -(logp * advantages).mean()
-            #     + 0.01 * kl
-            #     - 0.001 * ent
-            # )
-            loss = -(logp * advantages).mean()
+        advantages = advantages.reshape(B * K)
 
-            loss.backward()
-            optimizer.step()
+        # normalize advantages 
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        batch_reward = rewards.mean().item()
+        # ==================================================
+        # 6. Loss
+        # ==================================================
+        loss = -(logp * advantages).mean()
 
-        running_reward += batch_reward
+        loss = loss + 0.01 * kl - 0.001 * ent
+
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        optimizer.step()
+
+        running_reward += rewards.mean().item()
         running_loss += loss.item()
 
-        if step % 5 == 0:
+        # if step % 10 == 0:
+        print(
+            f"[GRPO] step {step} "
+            f"loss {loss.item():.4f} "
+            f"kl {kl.item():.4f} "
+            f"reward {rewards.mean().item():.3f}"
+        )
 
-            print(
-                f"GRPO step {step} "
-                f"loss {loss.item():.4f} "
-                f"reward {batch_reward:.4f}"
-            )
-
-            global_step += 1
+        global_step += 1
 
     return (
         running_loss / len(loader),
         running_reward / len(loader),
         global_step,
     )
+
+def save_history(history, name):
+
+    csv_path = f"train_progress/csv/{name}.csv"
+    img_path = f"train_progress/image/{name}.jpeg"
+
+    
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    os.makedirs(os.path.dirname(img_path), exist_ok=True)
+
+    # Save CSV
+    df = pd.DataFrame(history)
+    df.to_csv(csv_path, index=False)
+
+    # Save Graph
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(df["epoch"], df["train_reward"], label="Train Reward")
+    plt.plot(df["epoch"], df["val_reward"], label="Val Reward")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Reward")
+    plt.title("GPRO Training Progress")
+    plt.legend()
+    plt.grid(True)
+
+    plt.savefig(img_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"CSV saved: {csv_path}")
+    print(f"Graph saved: {img_path}")
+
 
 def train(model,tokenizer,train_loader,val_loader,optimizer, device,config):
 
@@ -389,18 +303,28 @@ def train(model,tokenizer,train_loader,val_loader,optimizer, device,config):
 
     if use_amp:
         scaler = torch.amp.GradScaler("cuda")
+    for epoch in range(config.sft_epochs):
+        running_loss = 0.0
+        for step, batch in enumerate(train_loader):
 
-    for step, batch in enumerate(train_loader):
+            x = batch["question_answer"].to(device)
 
-        if step >= 20:
-            break
+            optimizer.zero_grad(set_to_none=True)
 
-        x = batch["question_answer"].to(device)
+            if use_amp:
+                with torch.autocast(device_type="cuda"):
+                    logits = model(x[:, :-1])
+                    loss = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)),
+                        x[:, 1:].reshape(-1),
+                        ignore_index=tokenizer.pad_token_id
+                    )
 
-        optimizer.zero_grad(set_to_none=True)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
-        if use_amp:
-            with torch.autocast(device_type="cuda"):
+            else:
                 logits = model(x[:, :-1])
                 loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
@@ -408,36 +332,37 @@ def train(model,tokenizer,train_loader,val_loader,optimizer, device,config):
                     ignore_index=tokenizer.pad_token_id
                 )
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+                loss.backward()
+                optimizer.step()
 
-        else:
-            logits = model(x[:, :-1])
-            loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                x[:, 1:].reshape(-1),
-                ignore_index=tokenizer.pad_token_id
-            )
+            running_loss += loss.item()
 
-            loss.backward()
-            optimizer.step()
+            if step % 20 == 0:
+                print(f"SFT step {step} loss {loss.item():.4f}")
 
-        if step % 10 == 0:
-            print(f"SFT step {step} loss {loss.item():.4f}")
+        print(f"SFT epoch : {epoch+1} loss {running_loss/len(train_loader):.4f}")
 
     # =========================
     # PHASE 2: GRPO
     # =========================
     print("🔥 Phase 2: GRPO")
+
+    ref_model = copy.deepcopy(model)
+    ref_model.eval()
+
+    for p in ref_model.parameters():
+        p.requires_grad = False
+
     global_step = 0
     best_val_reward = -1e9
+    history = []
 
     for epoch in range(config.epochs):
         print(f"Epoch {epoch+1} | Training GRPO")
 
         train_loss,train_reward, global_step = train_one_epoch(
             model,
+            ref_model,
             tokenizer,
             train_loader,
             optimizer,
@@ -459,8 +384,14 @@ def train(model,tokenizer,train_loader,val_loader,optimizer, device,config):
                 epoch+1,
                 global_step
             )
+        history.append({
+                            "epoch": epoch + 1,
+                            "train_reward": train_reward,
+                            "val_reward": val_reward
+                        })
 
         print(f"Epoch {epoch+1} | Train loss {train_loss:.4f} | Train Reward {train_reward:.4f}| Val Reward {val_reward:.4f}")
+    save_history(history, "gpro_history")
 
 
 

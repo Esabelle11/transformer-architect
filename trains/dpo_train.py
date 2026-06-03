@@ -3,6 +3,10 @@ import torch
 import numpy as np
 from torch.nn import functional as F
 from trains.checkpoint import save_checkpoint
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
 
 def sequence_logprob(logits, labels):
 
@@ -247,6 +251,36 @@ def evaluate(
 
     return avg_loss
 
+def save_history(history, name):
+
+    csv_path = f"train_progress/csv/{name}.csv"
+    img_path = f"train_progress/image/{name}.jpeg"
+
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    os.makedirs(os.path.dirname(img_path), exist_ok=True)
+
+
+    # Save CSV
+    df = pd.DataFrame(history)
+    df.to_csv(csv_path, index=False)
+
+    # Save Graph
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(df["epoch"], df["train_loss"], label="Train Loss")
+    plt.plot(df["epoch"], df["val_loss"], label="Val Loss")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("DPO Training Progress")
+    plt.legend()
+    plt.grid(True)
+
+    plt.savefig(img_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"CSV saved: {csv_path}")
+    print(f"Graph saved: {img_path}")
 
 def train(
         policy_model,
@@ -260,6 +294,7 @@ def train(
 
     global_step = 0
     best_val_loss = float("inf")
+    history = []
 
     for epoch in range(config.epochs):
 
@@ -294,5 +329,13 @@ def train(
                 global_step
             )
 
+        history.append({
+                            "epoch": epoch + 1,
+                            "train_loss": train_loss,
+                            "val_loss": val_loss
+                        })
+
         print(f"Epoch {epoch} | Train {train_loss:.4f} | Val {val_loss:.4f}")
+
+    save_history(history, "dpo_history")
 

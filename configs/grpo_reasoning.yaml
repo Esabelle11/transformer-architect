@@ -6,12 +6,14 @@ tokenizer_model_name: "gpt2"
 train_size: 1000
 test_size: 250
 max_length: 512
+q_max_length: 256
 
 #training config
 # GRPO-safe batch size
 batch_size: 16
 accumulation_steps: 2
 epochs: 3
+sft_epochs: 2
 lr: 0.0001
 # GRPO KL penalty (if you implement KL later)
 kl_beta: 0.02

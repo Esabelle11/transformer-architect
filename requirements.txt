@@ -4,3 +4,4 @@ python-box
 numpy
 datasets
 transformers
+matplotlib
